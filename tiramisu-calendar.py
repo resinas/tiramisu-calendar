@@ -3,10 +3,9 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 import seaborn as sns
-import matplotlib
+import altair as alt
 import streamlit as st
 from streamlit_calendar import calendar
-from streamlit_timeline import st_timeline
 
 
 def transform_awt_to_activity_log(dataframe, inactivity_threshold=pd.Timedelta("1m")):
@@ -387,7 +386,20 @@ else:
                     # "start": start.strftime(time_format),
                     # "end": end.strftime(time_format)    
                 }
-                timeline = st_timeline(items, options=options)
+                #timeline = st_timeline(items, options=options)
+
+                timeline_data = pd.DataFrame(cp[["Begin", "End"]])
+                timeline_data['Title'] = cp["WP flow activity"] + " - " + cp["Case"]
+                timeline_data['Color'] = cp["WP flow activity"].apply(lambda x: palette[x])
+                timeline = alt.Chart(timeline_data).mark_bar().encode(
+                    x=alt.X('Begin', axis=alt.Axis(title="", grid=True, format='%H:%M:%S')),
+                    x2=alt.X2('End', title=""),
+                    y=alt.Y('Title', axis=alt.Axis(title="")),
+                    color=alt.Color('Color', scale=None, legend=None),
+                    tooltip=[alt.Tooltip('Begin:T', format='%H:%M'), alt.Tooltip('End:T', format='%H:%M'), 'Title']
+                )
+                st.altair_chart(timeline, use_container_width=True)
+
                 metrics = compute_metrics(cp, event["extendedProps"]["activity"])
 
                 if event["extendedProps"]["activity"] != "**Misc":

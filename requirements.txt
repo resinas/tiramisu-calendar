@@ -3,4 +3,4 @@ pandas
 numpy
 seaborn
 streamlit-calendar
-streamlit-vis-timeline
+altair
