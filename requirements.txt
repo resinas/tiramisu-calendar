@@ -4,3 +4,4 @@ numpy
 seaborn
 streamlit-calendar
 altair
+calplot

@@ -2,8 +2,10 @@ from datetime import datetime
 
 import numpy as np
 import pandas as pd
+import calplot
 import seaborn as sns
 import altair as alt
+import matplotlib.pyplot as plt
 import streamlit as st
 from streamlit_calendar import calendar
 
@@ -320,9 +322,10 @@ def create_timeline(palette, cp, format='%H:%M', tooltip_format=None):
 
 def interval_details(raw, palette, event, start, end, time_format):
     time_filter = ((raw["Begin"] >= start) & (raw["Begin"] <= end)) | ((raw["End"] >= start) & (raw["End"] <= end))
-    cp = raw[time_filter][["Begin", "End", "WP flow activity", "Case", "Duration"]].copy()
+    cp = raw[time_filter][["Begin", "End", "WP flow activity", "Case"]].copy()
     cp.loc[cp["Begin"] < start, "Begin"] = start
     cp.loc[cp["End"] > end, "End"] = end
+    cp["Duration"] = cp["End"] - cp["Begin"]
     main_activity = event["activity"] if event is not None and event["activity"] != "**Misc" else None
 
     st.subheader(f"Activities from {start.strftime(time_format)} to {end.strftime(time_format)}")
@@ -365,8 +368,30 @@ def interval_details(raw, palette, event, start, end, time_format):
                         })
 
 def case_details(raw, palette, case, time_format):
-    st.subheader(f'Other instances of {case}')
+    st.subheader(f'Activities of {case}')
     
+    cp = raw[raw["Case"]==case][["Begin", "End", "WP flow activity", "Case", "Duration"]].copy()
+    if cp["End"].max() - cp["Begin"].min() > pd.Timedelta('3d'):
+        timeline_time_format = "%d %b"
+    else:
+        timeline_time_format = "%d %b %H:%M"
+
+    st.markdown("##### Overview")
+    st.dataframe(cp.groupby("WP flow activity", sort=False).agg(Duration=("Duration", "sum"), First=("Begin", "min"), Last=("End", "max")))
+    plt.rc('font', size=12)
+    if "case_activity_filter" in st.session_state and len(st.session_state.case_activity_filter) > 0:
+        df = cp[cp["WP flow activity"].isin(st.session_state.case_activity_filter)]
+    else:
+        df = cp
+    df = df.groupby(df["Begin"].dt.date)["Duration"].sum() / pd.Timedelta('1min')
+    df.index = pd.to_datetime(df.index)
+    fig, ax = calplot.calplot(df, suptitle="Total work in case (mins)", dropzero=True)
+    st.pyplot(fig)
+    st.multiselect("Filter by activity:", options=cp["WP flow activity"].unique(), key='case_activity_filter')
+
+
+    # timeline = create_timeline(palette, cp, format=timeline_time_format, tooltip_format="%d %b %H:%M")
+    # st.altair_chart(timeline, use_container_width=True)
     data_detail = to_calendar_format(hourly[hourly["Case"]==case], palette)
     # details_event = calendar(
     #     events = data_detail, 
@@ -380,16 +405,6 @@ def case_details(raw, palette, case, time_format):
     #     },                 
     #     custom_css = custom_css,
     #     key = f'calendar_case_{case}')      
-
-    cp = raw[raw["Case"]==case][["Begin", "End", "WP flow activity", "Case", "Duration"]].copy()
-    if cp["End"].max() - cp["Begin"].min() > pd.Timedelta('3d'):
-        timeline_time_format = "%d %b"
-    else:
-        timeline_time_format = "%d %b %H:%M"
-
-    st.markdown("##### Overview")
-    timeline = create_timeline(palette, cp, format=timeline_time_format, tooltip_format="%d %b %H:%M")
-    st.altair_chart(timeline, use_container_width=True)
 
     with st.expander("See details of all activities:"):
         st.dataframe(
@@ -406,27 +421,36 @@ def case_details(raw, palette, case, time_format):
     by_dates, by_activities = st.tabs(["By dates", "By activities"])
     with by_dates:
         prev_day = None
-        for i, h in hourly[hourly["Case"]==case].iterrows():
-            if prev_day is None or prev_day != h['Begin'].strftime('%d %b'):
-                st.markdown(f"**{h['Begin'].strftime('%d %b')}**")
-                prev_day = h['Begin'].strftime('%d %b')
-            with st.expander(f'From {h["Begin"].strftime("%H:%M")} to {h["End"].strftime("%H:%M")}: {h["Activity"]}', expanded=True):
-                time_filter = ((raw["Begin"] >= h["Begin"]) & (raw["Begin"] <= h["End"])) | ((raw["End"] >= h["Begin"]) & (raw["End"] <= h["End"]))
+        # for i, h in hourly[hourly["Case"]==case].iterrows():
+        #     if prev_day is None or prev_day != h['Begin'].strftime('%d %b'):
+        #         st.markdown(f"**{h['Begin'].strftime('%d %b')}**")
+        #         prev_day = h['Begin'].strftime('%d %b')
+        #     with st.expander(f'From {h["Begin"].strftime("%H:%M")} to {h["End"].strftime("%H:%M")}: {h["Activity"]}', expanded=True):
+        #         time_filter = ((raw["Begin"] >= h["Begin"]) & (raw["Begin"] <= h["End"])) | ((raw["End"] >= h["Begin"]) & (raw["End"] <= h["End"]))
+        #         cp = raw[time_filter][["Begin", "End", "WP flow activity", "Case", "Duration"]].copy()
+        #         cp.loc[cp["Begin"] < h["Begin"], "Begin"] = h["Begin"]
+        #         cp.loc[cp["End"] > h["End"], "End"] = h["End"]
+
+        #         timeline = create_timeline(palette, cp)
+        #         st.altair_chart(timeline, use_container_width=True)
+        for name, group in raw[raw["Case"]==case].groupby(raw["Begin"].dt.date):
+            with st.expander(f"**{name.strftime('%d %b')}:**", expanded=True):
+                time_filter = (raw["Begin"].dt.date == name) & (raw["Case"] == case)
                 cp = raw[time_filter][["Begin", "End", "WP flow activity", "Case", "Duration"]].copy()
-                cp.loc[cp["Begin"] < h["Begin"], "Begin"] = h["Begin"]
-                cp.loc[cp["End"] > h["End"], "End"] = h["End"]
 
                 timeline = create_timeline(palette, cp)
                 st.altair_chart(timeline, use_container_width=True)
     with by_activities:
-        for name, group in hourly[hourly["Case"]==case].groupby("Activity", sort=False):
+        for name, group in raw[raw["Case"]==case].groupby("WP flow activity", sort=False):
             with st.expander(f"**{name}:**", expanded=True):
-                for i, h in group.iterrows():
-                    st.markdown(f'**{h["Begin"].strftime("%d %b")}:** From {h["Begin"].strftime("%H:%M")} to {h["End"].strftime("%H:%M")}')
-                    time_filter = ((raw["Begin"] >= h["Begin"]) & (raw["Begin"] <= h["End"])) | ((raw["End"] >= h["Begin"]) & (raw["End"] <= h["End"]))
+                for j, h in group.groupby(group["Begin"].dt.date):
+                    st.markdown(f'**{j.strftime("%d %b")}**')                    
+                    #st.markdown(f'**{h["Begin"].strftime("%d %b")}:** From {h["Begin"].strftime("%H:%M")} to {h["End"].strftime("%H:%M")}')
+                    #time_filter = ((raw["Begin"] >= h["Begin"]) & (raw["Begin"] <= h["End"])) | ((raw["End"] >= h["Begin"]) & (raw["End"] <= h["End"]))
+                    time_filter = (raw["Begin"].dt.date == j) & (raw["Case"] == case)
                     cp = raw[time_filter][["Begin", "End", "WP flow activity", "Case", "Duration"]].copy()
-                    cp.loc[cp["Begin"] < h["Begin"], "Begin"] = h["Begin"]
-                    cp.loc[cp["End"] > h["End"], "End"] = h["End"]
+                    # cp.loc[cp["Begin"] < h["Begin"], "Begin"] = h["Begin"]
+                    # cp.loc[cp["End"] > h["End"], "End"] = h["End"]
 
                     timeline = create_timeline(palette, cp)
                     st.altair_chart(timeline, use_container_width=True)
@@ -489,9 +513,10 @@ else:
 
         if include_calendar:
             data = data + cal_to_calendar(caldf)
-            calendar_sel = calendar(events = data, options = calendar_options, custom_css = custom_css, key=f"cal_with_cal_{hash(tuple(filter_selection))}")
+            calendar_sel = calendar(events = data, options = calendar_options, callbacks=["eventClick", "select"], custom_css = custom_css, key=f"cal_with_cal_{hash(tuple(filter_selection))}")
         else:
-            calendar_sel = calendar(events = data, options = calendar_options, custom_css = custom_css, key=f"cal_without_cal_{hash(tuple(filter_selection))}")        
+            calendar_sel = calendar(events = data, options = calendar_options, callbacks=["eventClick", "select"], custom_css = custom_css, key=f"cal_without_cal_{hash(tuple(filter_selection))}")        
+
 
     if "callback" in calendar_sel and calendar_sel["callback"] == "eventClick":
         event = calendar_sel["eventClick"]["event"]
