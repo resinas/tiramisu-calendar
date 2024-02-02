@@ -300,16 +300,20 @@ if calendar_data is not None:
     #         "Begin": st.column_config.DatetimeColumn("Begin", format="D MMM YYYY, hh:mm"),
     #         "End": st.column_config.DatetimeColumn("End", format="D MMM YYYY, hh:mm")
     #     })
-def create_timeline(palette, cp):
+def create_timeline(palette, cp, format='%H:%M', tooltip_format=None):
+    if tooltip_format is None:
+        tooltip_format = format
     timeline_data = pd.DataFrame(cp[["Begin", "End"]])
+    timeline_data['Begin'] = timeline_data['Begin'].dt.tz_localize('Europe/Amsterdam')
+    timeline_data['End'] = timeline_data['End'].dt.tz_localize('Europe/Amsterdam')
     timeline_data['Title'] = cp["WP flow activity"] + " - " + cp["Case"]
     timeline_data['Color'] = cp["WP flow activity"].apply(lambda x: palette[x])
     timeline = alt.Chart(timeline_data).mark_bar().encode(
-                    x=alt.X('Begin', axis=alt.Axis(title="", grid=True, format='%H:%M:%S')),
+                    x=alt.X('Begin', axis=alt.Axis(title="", grid=True, format=format)),
                     x2=alt.X2('End', title=""),
                     y=alt.Y('Title', axis=alt.Axis(title="")),
                     color=alt.Color('Color', scale=None, legend=None),
-                    tooltip=[alt.Tooltip('Begin:T', format='%H:%M'), alt.Tooltip('End:T', format='%H:%M'), 'Title']
+                    tooltip=[alt.Tooltip('Begin:T', format=tooltip_format), alt.Tooltip('End:T', format=tooltip_format), 'Title']
                 )
     
     return timeline
@@ -359,6 +363,79 @@ def interval_details(raw, palette, event, start, end, time_format):
                             "Begin": st.column_config.DatetimeColumn("Begin", format="HH:mm"),
                             "End": st.column_config.DatetimeColumn("End", format="HH:mm")
                         })
+
+def case_details(raw, palette, case, time_format):
+    st.subheader(f'Other instances of {case}')
+    
+    data_detail = to_calendar_format(hourly[hourly["Case"]==case], palette)
+    # details_event = calendar(
+    #     events = data_detail, 
+    #     options = {
+    #         "headerToolbar": {
+    #             "right": "prev,next"
+    #         },
+    #         "initialView": "listYear",
+    #         "initialDate": "2023",
+    #         "firstDay": 1
+    #     },                 
+    #     custom_css = custom_css,
+    #     key = f'calendar_case_{case}')      
+
+    cp = raw[raw["Case"]==case][["Begin", "End", "WP flow activity", "Case", "Duration"]].copy()
+    if cp["End"].max() - cp["Begin"].min() > pd.Timedelta('3d'):
+        timeline_time_format = "%d %b"
+    else:
+        timeline_time_format = "%d %b %H:%M"
+
+    st.markdown("##### Overview")
+    timeline = create_timeline(palette, cp, format=timeline_time_format, tooltip_format="%d %b %H:%M")
+    st.altair_chart(timeline, use_container_width=True)
+
+    with st.expander("See details of all activities:"):
+        st.dataframe(
+                        cp.drop("Case", axis=1),            
+                        hide_index=True,
+                        use_container_width=True,
+                        column_config={
+                            "Begin": st.column_config.DatetimeColumn("Begin", format="DD/MM/YY HH:mm"),
+                            "End": st.column_config.DatetimeColumn("End", format="DD/MM/YY HH:mm")
+                        })
+
+    st.markdown("##### Details")
+
+    by_dates, by_activities = st.tabs(["By dates", "By activities"])
+    with by_dates:
+        prev_day = None
+        for i, h in hourly[hourly["Case"]==case].iterrows():
+            if prev_day is None or prev_day != h['Begin'].strftime('%d %b'):
+                st.markdown(f"**{h['Begin'].strftime('%d %b')}**")
+                prev_day = h['Begin'].strftime('%d %b')
+            with st.expander(f'From {h["Begin"].strftime("%H:%M")} to {h["End"].strftime("%H:%M")}: {h["Activity"]}', expanded=True):
+                time_filter = ((raw["Begin"] >= h["Begin"]) & (raw["Begin"] <= h["End"])) | ((raw["End"] >= h["Begin"]) & (raw["End"] <= h["End"]))
+                cp = raw[time_filter][["Begin", "End", "WP flow activity", "Case", "Duration"]].copy()
+                cp.loc[cp["Begin"] < h["Begin"], "Begin"] = h["Begin"]
+                cp.loc[cp["End"] > h["End"], "End"] = h["End"]
+
+                timeline = create_timeline(palette, cp)
+                st.altair_chart(timeline, use_container_width=True)
+    with by_activities:
+        for name, group in hourly[hourly["Case"]==case].groupby("Activity", sort=False):
+            with st.expander(f"**{name}:**", expanded=True):
+                for i, h in group.iterrows():
+                    st.markdown(f'**{h["Begin"].strftime("%d %b")}:** From {h["Begin"].strftime("%H:%M")} to {h["End"].strftime("%H:%M")}')
+                    time_filter = ((raw["Begin"] >= h["Begin"]) & (raw["Begin"] <= h["End"])) | ((raw["End"] >= h["Begin"]) & (raw["End"] <= h["End"]))
+                    cp = raw[time_filter][["Begin", "End", "WP flow activity", "Case", "Duration"]].copy()
+                    cp.loc[cp["Begin"] < h["Begin"], "Begin"] = h["Begin"]
+                    cp.loc[cp["End"] > h["End"], "End"] = h["End"]
+
+                    timeline = create_timeline(palette, cp)
+                    st.altair_chart(timeline, use_container_width=True)
+
+
+
+
+
+
 
 if awt_data is None:
     st.write("You need to upload the data first")
@@ -429,33 +506,34 @@ else:
                 st.write(f"From {start.strftime(time_format)} to {end.strftime(time_format)}")
             else:
                 interval_details(raw, palette, event["extendedProps"], start, end, time_format)
+                case_details(raw, palette, event["extendedProps"]["case"], time_format)
             
-        with col_calendar:
-            if "activity" in event["extendedProps"]:
-                st.write(f'Other instances of activity {event["extendedProps"]["activity"]}:')
-                    # st.write()
-                    # st.dataframe(
-                    #     hourly[hourly['Activity']==event["extendedProps"]["activity"]][["Begin", "End", "Case"]], 
-                    #     hide_index=True, 
-                    #     height=500,
-                    #     column_config={
-                    #         "Begin": st.column_config.DatetimeColumn("Begin", format="D MMM YYYY, hh:mm"),
-                    #         "End": st.column_config.DatetimeColumn("End", format="D MMM YYYY, hh:mm")
-                    #     })
+        # with col_calendar:
+        #     if "activity" in event["extendedProps"]:
+        #         st.write(f'Other instances of activity {event["extendedProps"]["activity"]}:')
+        #             # st.write()
+        #             # st.dataframe(
+        #             #     hourly[hourly['Activity']==event["extendedProps"]["activity"]][["Begin", "End", "Case"]], 
+        #             #     hide_index=True, 
+        #             #     height=500,
+        #             #     column_config={
+        #             #         "Begin": st.column_config.DatetimeColumn("Begin", format="D MMM YYYY, hh:mm"),
+        #             #         "End": st.column_config.DatetimeColumn("End", format="D MMM YYYY, hh:mm")
+        #             #     })
                     
-                data_detail = to_calendar_format(hourly, palette, [event["extendedProps"]["activity"]])
-                details_event = calendar(
-                    events = data_detail, 
-                    options = {
-                        "headerToolbar": {
-                            "right": "prev,next"
-                        },
-                        "initialView": "listYear",
-                        "initialDate": "2023",
-                        "firstDay": 1
-                    },                 
-                    custom_css = custom_css,
-                    key = f'calendar_detail_{event["extendedProps"]["activity"]}')      
+        #         data_detail = to_calendar_format(hourly, palette, [event["extendedProps"]["activity"]])
+        #         details_event = calendar(
+        #             events = data_detail, 
+        #             options = {
+        #                 "headerToolbar": {
+        #                     "right": "prev,next"
+        #                 },
+        #                 "initialView": "listYear",
+        #                 "initialDate": "2023",
+        #                 "firstDay": 1
+        #             },                 
+        #             custom_css = custom_css,
+        #             key = f'calendar_detail_{event["extendedProps"]["activity"]}')      
 
     elif "callback" in calendar_sel and calendar_sel["callback"] == "select":
         start = datetime.strptime(calendar_sel['select']['start'], "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=None)
