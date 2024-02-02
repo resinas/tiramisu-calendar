@@ -171,15 +171,23 @@ def group_hours(dataframe, slot='1H'):
     return  pr
 
 
-def compute_metrics(dataframe, activity):
-    effective_duration = dataframe[dataframe["WP flow activity"]==activity]["Duration"].sum() / pd.Timedelta('1min')
-    other_activities = (dataframe["Duration"].sum() / pd.Timedelta('1min')) - effective_duration    
+def compute_metrics(dataframe, activity=None):
+
+    if activity is not None:
+        effective_duration = dataframe[dataframe["WP flow activity"]==activity]["Duration"].sum() / pd.Timedelta('1min')
+        other_activities = (dataframe["Duration"].sum() / pd.Timedelta('1min')) - effective_duration    
+        times_resumed = dataframe[dataframe["WP flow activity"]==activity]["Duration"].count()
+        mean_slot_duration = dataframe[dataframe["WP flow activity"]==activity]["Duration"].mean() / pd.Timedelta('1min')
+    else:
+        effective_duration = dataframe["Duration"].sum() / pd.Timedelta('1min')
+        other_activities = 0
+        times_resumed = dataframe["Duration"].count()
+        mean_slot_duration = dataframe["Duration"].mean() / pd.Timedelta('1min')        
+
     total_duration = (dataframe["End"].max() - dataframe["Begin"].min()) / pd.Timedelta('1min')
+    number_activities = dataframe["WP flow activity"].nunique()
     percentage_effective = float(effective_duration) / float(total_duration)
     external_interruptions = total_duration - (effective_duration + other_activities)
-    times_resumed = dataframe[dataframe["WP flow activity"]==activity]["Duration"].count()
-    mean_slot_duration = dataframe[dataframe["WP flow activity"]==activity]["Duration"].mean() / pd.Timedelta('1min')
-    number_other_activities = dataframe["WP flow activity"].nunique() - 1
 
     return {
         "effective_duration": effective_duration,
@@ -189,7 +197,7 @@ def compute_metrics(dataframe, activity):
         "external_interruptions": external_interruptions,
         "times_resumed": times_resumed,
         "mean_slot_duration": mean_slot_duration,
-        "number_other_activities": number_other_activities
+        "number_activities": number_activities
     }
 
 
@@ -292,6 +300,66 @@ if calendar_data is not None:
     #         "Begin": st.column_config.DatetimeColumn("Begin", format="D MMM YYYY, hh:mm"),
     #         "End": st.column_config.DatetimeColumn("End", format="D MMM YYYY, hh:mm")
     #     })
+def create_timeline(palette, cp):
+    timeline_data = pd.DataFrame(cp[["Begin", "End"]])
+    timeline_data['Title'] = cp["WP flow activity"] + " - " + cp["Case"]
+    timeline_data['Color'] = cp["WP flow activity"].apply(lambda x: palette[x])
+    timeline = alt.Chart(timeline_data).mark_bar().encode(
+                    x=alt.X('Begin', axis=alt.Axis(title="", grid=True, format='%H:%M:%S')),
+                    x2=alt.X2('End', title=""),
+                    y=alt.Y('Title', axis=alt.Axis(title="")),
+                    color=alt.Color('Color', scale=None, legend=None),
+                    tooltip=[alt.Tooltip('Begin:T', format='%H:%M'), alt.Tooltip('End:T', format='%H:%M'), 'Title']
+                )
+    
+    return timeline
+
+def interval_details(raw, palette, event, start, end, time_format):
+    time_filter = ((raw["Begin"] >= start) & (raw["Begin"] <= end)) | ((raw["End"] >= start) & (raw["End"] <= end))
+    cp = raw[time_filter][["Begin", "End", "WP flow activity", "Case", "Duration"]].copy()
+    cp.loc[cp["Begin"] < start, "Begin"] = start
+    cp.loc[cp["End"] > end, "End"] = end
+    main_activity = event["activity"] if event is not None and event["activity"] != "**Misc" else None
+
+    st.subheader(f"Activities from {start.strftime(time_format)} to {end.strftime(time_format)}")
+    if main_activity is not None:
+        st.markdown(f"##### Main activity: {event['activity']} - {event['case']}")
+
+    #st.write(f"Starts at {cp['Begin'].min()} and ends at {cp['End'].max()}")
+
+    timeline = create_timeline(palette, cp)
+    st.altair_chart(timeline, use_container_width=True)
+
+    metrics = compute_metrics(cp, main_activity)
+
+    if main_activity is not None:
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Effective duration", f'{round(metrics["effective_duration"],2):g} min') 
+        col2.metric("Other activities", f'{round(metrics["other_activities"],2):g} min')
+        col3.metric("External interruptions", f'{round(metrics["external_interruptions"],2):g} min')
+        col4, col5, col6 = st.columns(3)
+        col4.metric("Percentage effective", f'{round(metrics["percentage_effective"]*100,2):g} %')
+        col5.metric("Times resumed", metrics["times_resumed"])
+        col6.metric("Number other activities", metrics["number_activities"]-1)
+    else:
+        col1, col2= st.columns(2)
+        col1.metric("Effective duration", f'{round(metrics["effective_duration"],2):g} min') 
+        col2.metric("External interruptions", f'{round(metrics["external_interruptions"],2):g} min')
+        col4, col5 = st.columns(2)
+        col4.metric("Percentage effective", f'{round(metrics["percentage_effective"]*100,2):g} %')
+        col5.metric("Number different activities", metrics["number_activities"])
+
+
+    with st.expander("See details of the interval:"):
+        st.dataframe(
+                        cp,            
+                        hide_index=True,
+                        use_container_width=True,
+                        column_config={
+                            "Begin": st.column_config.DatetimeColumn("Begin", format="HH:mm"),
+                            "End": st.column_config.DatetimeColumn("End", format="HH:mm")
+                        })
+
 if awt_data is None:
     st.write("You need to upload the data first")
 else:
@@ -320,6 +388,7 @@ else:
             "slotDuration": "00:15:00",
             "initialView": "timeGridWeek",
             "initialDate": "2023-03-06",
+            "height": 600,
             "firstDay": 1
         }
 
@@ -347,91 +416,20 @@ else:
         else:
             calendar_sel = calendar(events = data, options = calendar_options, custom_css = custom_css, key=f"cal_without_cal_{hash(tuple(filter_selection))}")        
 
-
     if "callback" in calendar_sel and calendar_sel["callback"] == "eventClick":
         event = calendar_sel["eventClick"]["event"]
         start = datetime.fromisoformat(event['start']).replace(tzinfo=None)
         end = datetime.fromisoformat(event['end']).replace(tzinfo=None)
-        time_format = "%Y-%m-%d %H:%M:%S"
-        
-        time_filter = ((raw["Begin"] >= start) & (raw["Begin"] <= end)) | ((raw["End"] >= start) & (raw["End"] <= end))
-        cp = raw[time_filter][["Begin", "End", "WP flow activity", "Case", "Duration"]].copy()
+        time_format = "%Y-%m-%d %H:%M"
 
-
-        with col_details:
-            
+        with col_details:            
             #st.write(details_event)
             if "calendar_event" in event["extendedProps"]:
                 st.subheader(f"Calendar event: {event['title']}")
                 st.write(f"From {start.strftime(time_format)} to {end.strftime(time_format)}")
             else:
-                st.subheader(f"Activities from {start.strftime(time_format)} to {end.strftime(time_format)}")
-                st.write(f"{event['title']}")
-
-                st.write(f"Starts at {cp['Begin'].min()} and ends at {cp['End'].max()}")
-
-                items = [{
-                            "id": i,
-                            "content": row['WP flow activity'] + " - " + row['Case'],
-                            "title": row['WP flow activity'] + " - " + row['Case'],
-                            "start": row['Begin'].strftime(time_format),
-                            "end": row['End'].strftime(time_format),
-                            "style": f"background-color: {palette[row['WP flow activity']]}",
-                            "group": (row['WP flow activity'] + " - " + row['Case'] == event['title']) + 0
-                        } for i,row in cp.iterrows()]
-
-                options = {
-                    "zoomable": False,
-                    "moveable": False,
-                    # "start": start.strftime(time_format),
-                    # "end": end.strftime(time_format)    
-                }
-                #timeline = st_timeline(items, options=options)
-
-                timeline_data = pd.DataFrame(cp[["Begin", "End"]])
-                timeline_data['Title'] = cp["WP flow activity"] + " - " + cp["Case"]
-                timeline_data['Color'] = cp["WP flow activity"].apply(lambda x: palette[x])
-                timeline = alt.Chart(timeline_data).mark_bar().encode(
-                    x=alt.X('Begin', axis=alt.Axis(title="", grid=True, format='%H:%M:%S')),
-                    x2=alt.X2('End', title=""),
-                    y=alt.Y('Title', axis=alt.Axis(title="")),
-                    color=alt.Color('Color', scale=None, legend=None),
-                    tooltip=[alt.Tooltip('Begin:T', format='%H:%M'), alt.Tooltip('End:T', format='%H:%M'), 'Title']
-                )
-                st.altair_chart(timeline, use_container_width=True)
-
-                metrics = compute_metrics(cp, event["extendedProps"]["activity"])
-
-                if event["extendedProps"]["activity"] != "**Misc":
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("Effective duration", f'{round(metrics["effective_duration"],2):g} min') 
-                    col2.metric("Other activities", f'{round(metrics["other_activities"],2):g} min')
-                    col3.metric("External interruptions", f'{round(metrics["external_interruptions"],2):g} min')
-                    col4, col5, col6 = st.columns(3)
-                    col4.metric("Percentage effective", f'{round(metrics["percentage_effective"]*100,2):g} %')
-                    col5.metric("Times resumed", metrics["times_resumed"])
-                    col6.metric("Number other activities", metrics["number_other_activities"])
-                else:
-                    col1, col2= st.columns(2)
-                    col1.metric("Effective duration", f'{round(metrics["other_activities"],2):g} min') 
-                    col2.metric("External interruptions", f'{round(metrics["external_interruptions"],2):g} min')
-                    col4, col5 = st.columns(2)
-                    col4.metric("Percentage effective", f'{round(metrics["other_activities"]/metrics["total_duration"]*100,2):g} %')
-                    col5.metric("Number different activities", metrics["number_other_activities"]+1)
-
-
-                with st.expander("See details in the interval:"):
-                    st.dataframe(
-                        cp,            
-                        hide_index=True,
-                        use_container_width=True,
-                        column_config={
-                            "Begin": st.column_config.DatetimeColumn("Begin", format="HH:mm"),
-                            "End": st.column_config.DatetimeColumn("End", format="HH:mm")
-                        })
-
+                interval_details(raw, palette, event["extendedProps"], start, end, time_format)
             
-
         with col_calendar:
             if "activity" in event["extendedProps"]:
                 st.write(f'Other instances of activity {event["extendedProps"]["activity"]}:')
@@ -446,12 +444,9 @@ else:
                     #     })
                     
                 data_detail = to_calendar_format(hourly, palette, [event["extendedProps"]["activity"]])
-
                 details_event = calendar(
                     events = data_detail, 
                     options = {
-                        # "slotMinTime": "08:00:00",
-                        # "slotMaxTime": "18:00:00",
                         "headerToolbar": {
                             "right": "prev,next"
                         },
@@ -461,5 +456,13 @@ else:
                     },                 
                     custom_css = custom_css,
                     key = f'calendar_detail_{event["extendedProps"]["activity"]}')      
-                
+
+    elif "callback" in calendar_sel and calendar_sel["callback"] == "select":
+        start = datetime.strptime(calendar_sel['select']['start'], "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=None)
+        end = datetime.strptime(calendar_sel['select']['end'], "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=None)
+        time_format = "%Y-%m-%d %H:%M"
+
+        with col_details:            
+            interval_details(raw, palette, None, start, end, time_format)
+
 
