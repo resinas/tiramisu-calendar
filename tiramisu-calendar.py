@@ -501,12 +501,17 @@ else:
 
         with col_details:            
             #st.write(details_event)
-            if "calendar_event" in event["extendedProps"]:
-                st.subheader(f"Calendar event: {event['title']}")
-                st.write(f"From {start.strftime(time_format)} to {end.strftime(time_format)}")
-            else:
-                interval_details(raw, palette, event["extendedProps"], start, end, time_format)
-                case_details(raw, palette, event["extendedProps"]["case"], time_format)
+            interval_detail, case_detail = st.tabs(["Interval details", "Case details"])
+            with interval_detail:
+                if "calendar_event" in event["extendedProps"]:
+                    st.subheader(f"Calendar event: {event['title']}")
+                    st.write(f"From {start.strftime(time_format)} to {end.strftime(time_format)}")
+                else:
+                    interval_details(raw, palette, event["extendedProps"], start, end, time_format)
+
+            with case_detail:
+                if "calendar_event" not in event["extendedProps"]:
+                    case_details(raw, palette, event["extendedProps"]["case"], time_format)
             
         # with col_calendar:
         #     if "activity" in event["extendedProps"]:
