@@ -1,206 +1,15 @@
 from datetime import datetime
 
+import altair as alt
+import calplot
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import calplot
 import seaborn as sns
-import altair as alt
-import matplotlib.pyplot as plt
 import streamlit as st
 from streamlit_calendar import calendar
 
-
-def transform_awt_to_activity_log(dataframe, inactivity_threshold=pd.Timedelta("1m")):
-    """Transforms an active window tracking log into an activity log
-
-    To transform it, we group all active windows events until a change happens. We consider it a change if the activity or the case assigned
-    to the active window is different or if the inactivity period between two active windows (the difference between the end of one event
-    and the beginning of the next one) is above the inactivity_threshold. At this moment we only keep the first window title.
-
-    Parameters
-    ----------
-    dataframe : DataFrame
-        The dataframe with the active window tracking event log (as exported by Tockler together with info about activity and case)
-    inactivity_threshold: Timedelta
-        The threshold to consider a new activity
-
-    Returns
-    -------
-    dataframe
-        The dataframe with the activity log
-    """
-    # We consider it a change if the activity is different or if the gap between the end of an activity and the beginning of the next is greater than a threshold
-    change = (((dataframe["WP flow activity"].shift() != dataframe["WP flow activity"]) & (dataframe["Case"].shift() != dataframe["Case"]))  |  ((dataframe["Begin"] - dataframe["End"].shift()) > inactivity_threshold))
-    it = change.cumsum()
-
-    pr = dataframe.groupby(by=it).agg({"Begin": "first", "End": "last", "WP flow activity": "first", "Case":"first", "Title": "first"})
-    pr["Duration"] = pr["End"] - pr["Begin"]
-    pr["Duration_minutes"] = pr["Duration"] / pd.Timedelta('1m')
-    prev = pr["WP flow activity"].shift()
-    prev.loc[pr["Begin"].dt.date != pr["Begin"].shift().dt.date] = np.nan
-    pr["Prev"] = prev
-    # We consider the gap only within the same day (alternatively, we could also consider there is a gap before the first activity in the morning)
-    pr["Gap"] = ((pr["Begin"] - pr.shift()["End"] > inactivity_threshold) & (pr["Begin"].dt.day == pr.shift()["End"].dt.day))    
-
-    return pr
-
-
-def expand_events(dataframe, time_slot='1H'):
-    """ Splits events in the event log based on the time intervals determined by the time slot
-
-    For instance, if the time slot is '1H' (one hour), and there is an event that begins at
-    8:58 and ends at 9:04, it splits the event in two: one from 8:58 to 9:00 and another one
-    from 9:00 to 9:04. 
-
-    Parameters
-    ----------
-    dataframe: DataFrame
-        The dataframe with the event log
-    time_slot: str, optional
-        The time interval used to split the event log using the same values as in pandas Timedelta (default '1H')
-
-    Returns
-    -------
-    dataframe
-        The dataframe with the splitted events
-    """
-    expanded_rows = []
-    
-    for index, row in dataframe.iterrows():
-        current_time = row['Begin']
-        end_time = row['End']
-        
-        #while current_time.hour < end_time.hour:
-        while (current_time + pd.Timedelta(time_slot)).floor(time_slot) < end_time:
-            new_time = (current_time + pd.Timedelta(time_slot)).floor(time_slot)
-            expanded_rows.append({
-                'Begin': current_time,
-                'End': min(new_time, end_time),
-                'WP flow activity': row['WP flow activity'],
-                'Case': row['Case'],
-                'Duration': min(new_time, end_time) - current_time
-            })
-            
-            current_time = new_time
-
-        if end_time != current_time:
-            expanded_rows.append({
-                'Begin': current_time,
-                'End': end_time,
-                'WP flow activity': row['WP flow activity'],
-                'Case': row['Case'],
-                'Duration': end_time - current_time
-            })
-    
-    return pd.DataFrame(expanded_rows)
-
-def compute_hourly_schedule(df, freq='1H', empty_threshold=None, misc_threshold=None):
-    """Computes a new log in which each row represents a predetermined time interval instead of an activity
-
-    This function receives a dataframe that represents an event log in which each row
-    represents an activity and returns a new dataframe in which each row is a predetermined
-    time interval instead of an activity. The time interval used is specified in a parameter. 
-    There are two thresholds that configure how the activity that is executed in each time
-    interval is determined. The empty_threshold is used to determine whether an activity has
-    been executed in that time interval at all. If the duration of the  activities performed 
-    in the time interval is lower than the empty_threshold, then the time interval is classified
-    as '**Empty'. If the time interval is not empty, then the activity performed in the time
-    interval is the activity with the greatest duration in that interval if the duration is
-    above the misc_threshold or if there is only one activity performed in that interval. 
-    Otherwise, the time interval is classified as '**Misc'. 
-    
-    Parameters
-    ----------
-    df : DataFrame
-        The input dataframe with the activity event log
-    freq : str, optional
-        The size of the time interval using the same values as in pandas Timedelta (default is '1H')
-    empty_threshold : Timedelta, optional
-        The threshold to determine whether an activity has been executed in a time interval (default is freq/4)
-    misc_threshold: Timedelta, optional
-        The threshold to determine whether the time interval is assigned to an activity (default is freq/3)
-        
-    Returns
-    -------
-    dataframe
-        a dataframe with a time interval event log
-    """
-    if empty_threshold is None:
-        empty_threshold = pd.Timedelta(freq) / 4
-    if misc_threshold is None:
-        misc_threshold = pd.Timedelta(freq) / 3
-
-    ee = expand_events(df, time_slot=freq)
-    ee['Hour'] = ee['Begin'].dt.floor(freq)
-    act_per_hour = ee.groupby(['Hour', 'WP flow activity', 'Case'])["Duration"].sum().reset_index()
-    max_per_hour = act_per_hour.groupby('Hour')["Duration"].max()
-    num_act_per_hour = act_per_hour.groupby('Hour')["Duration"].count()
-    sum_per_hour = act_per_hour.groupby('Hour')["Duration"].sum()
-    idx = act_per_hour.groupby('Hour')["Duration"].transform('max') == act_per_hour["Duration"]
-    act_max_per_hour = act_per_hour[idx].set_index('Hour')
-    act_max_per_hour['Total'] = sum_per_hour
-
-    act_max_per_hour.loc[(max_per_hour < misc_threshold) & (num_act_per_hour > 1), 'WP flow activity'] = '**Misc'
-    act_max_per_hour.loc[(max_per_hour < misc_threshold) & (num_act_per_hour > 1), 'Case'] = '**Misc'
-    act_max_per_hour.loc[sum_per_hour < empty_threshold, 'WP flow activity'] = '**Empty'
-    act_max_per_hour.loc[sum_per_hour < empty_threshold, 'Case'] = '**Empty'
-
-    return act_max_per_hour
-    
-
-def group_hours(dataframe, slot='1H'):
-    """Groups all consecutive time intervals with the same activity
-
-    Parameters
-    ----------
-    dataframe : DataFrame
-        A dataframe that contains a time interval event log
-    slot : str, optional
-        The slot used in the time interval event log (default is '1H'). This is necessary
-        because there is no safe way to compute this from the event log.
-
-    Returns
-    -------
-    dataframe
-        The dataframe with the time interval event log 
-    """
-    hs_log = dataframe.reset_index()
-    hs_log['NextHour'] = hs_log['Hour'] + pd.Timedelta(slot)
-    hs_change = (((hs_log["WP flow activity"].shift() != hs_log["WP flow activity"]) | (hs_log["Case"].shift() != hs_log["Case"])  |  ((hs_log['Hour'].dt.day.shift() != hs_log['Hour'].dt.day))))
-    it = hs_change.cumsum()
-    pr = hs_log.groupby(by=it).agg(Begin=("Hour", "first"), End= ("NextHour", "last"), Activity=("WP flow activity", "first"), Case=("Case", "first"))
-
-    return  pr
-
-
-def compute_metrics(dataframe, activity=None):
-
-    if activity is not None:
-        effective_duration = dataframe[dataframe["WP flow activity"]==activity]["Duration"].sum() / pd.Timedelta('1min')
-        other_activities = (dataframe["Duration"].sum() / pd.Timedelta('1min')) - effective_duration    
-        times_resumed = dataframe[dataframe["WP flow activity"]==activity]["Duration"].count()
-        mean_slot_duration = dataframe[dataframe["WP flow activity"]==activity]["Duration"].mean() / pd.Timedelta('1min')
-    else:
-        effective_duration = dataframe["Duration"].sum() / pd.Timedelta('1min')
-        other_activities = 0
-        times_resumed = dataframe["Duration"].count()
-        mean_slot_duration = dataframe["Duration"].mean() / pd.Timedelta('1min')        
-
-    total_duration = (dataframe["End"].max() - dataframe["Begin"].min()) / pd.Timedelta('1min')
-    number_activities = dataframe["WP flow activity"].nunique()
-    percentage_effective = float(effective_duration) / float(total_duration)
-    external_interruptions = total_duration - (effective_duration + other_activities)
-
-    return {
-        "effective_duration": effective_duration,
-        "percentage_effective": percentage_effective,
-        "other_activities": other_activities,
-        "total_duration": total_duration,
-        "external_interruptions": external_interruptions,
-        "times_resumed": times_resumed,
-        "mean_slot_duration": mean_slot_duration,
-        "number_activities": number_activities
-    }
+import awt
 
 
 @st.cache_data
@@ -208,7 +17,7 @@ def load_data(awt_data):
     ifull = pd.read_csv(awt_data, delimiter=";", parse_dates=True, infer_datetime_format=True)
     ifull["Begin"] = pd.to_datetime(ifull["Begin"], format="%d-%m-%Y %H:%M")
     ifull["End"] = pd.to_datetime(ifull["End"], format="%d-%m-%Y %H:%M")    
-    pr = transform_awt_to_activity_log(ifull)
+    pr = awt.transform_awt_to_activity_log(ifull)
 
     return pr
 
@@ -219,7 +28,6 @@ def load_calendar(calendar_data):
     caldf["Start"] = pd.to_datetime(calendar_csv["Start Date"] + " " + calendar_csv["Start Time"], format="%d-%m-%Y %H:%M:%S")
     caldf["End"] = pd.to_datetime(calendar_csv["End Date"] + " " + calendar_csv["End Time"], format="%d-%m-%Y %H:%M:%S")
     
-
     return caldf
 
 def cal_to_calendar(caldf):
@@ -238,7 +46,7 @@ def cal_to_calendar(caldf):
     
 
 def hourly_schedule(pr):
-    return group_hours(compute_hourly_schedule(pr, freq='15min'), slot='15min')
+    return awt.group_hours(awt.compute_hourly_schedule(pr, freq='15min'), slot='15min')
 
 def to_calendar_format(dataframe, palette, activities=[]):
     df = dataframe[dataframe['Activity'] != "**Empty"]
@@ -269,6 +77,7 @@ with st.sidebar:
 if awt_data is not None:  
     data_load_state = st.text('Loading data...')
     raw = load_data(awt_data)
+    daily = awt.compute_daily_log(raw)
     palette = create_color_palette(raw)
     hourly = hourly_schedule(raw)
     data_load_state.text("Done!")
@@ -337,7 +146,7 @@ def interval_details(raw, palette, event, start, end, time_format):
     timeline = create_timeline(palette, cp)
     st.altair_chart(timeline, use_container_width=True)
 
-    metrics = compute_metrics(cp, main_activity)
+    metrics = awt.compute_interval_metrics(cp, main_activity)
 
     if main_activity is not None:
         col1, col2, col3 = st.columns(3)
@@ -378,6 +187,7 @@ def case_details(raw, palette, case, time_format):
 
     st.markdown("##### Overview")
     st.dataframe(cp.groupby("WP flow activity", sort=False).agg(Duration=("Duration", "sum"), First=("Begin", "min"), Last=("End", "max")))
+    st.multiselect("Filter by activity:", options=cp["WP flow activity"].unique(), key='case_activity_filter')
     plt.rc('font', size=12)
     if "case_activity_filter" in st.session_state and len(st.session_state.case_activity_filter) > 0:
         df = cp[cp["WP flow activity"].isin(st.session_state.case_activity_filter)]
@@ -387,7 +197,18 @@ def case_details(raw, palette, case, time_format):
     df.index = pd.to_datetime(df.index)
     fig, ax = calplot.calplot(df, suptitle="Total work in case (mins)", dropzero=True)
     st.pyplot(fig)
-    st.multiselect("Filter by activity:", options=cp["WP flow activity"].unique(), key='case_activity_filter')
+
+    metrics = awt.compute_case_metrics(raw[raw["Case"]==case], daily[daily["Case"]==case])
+    
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Mean duration", f'{round(metrics["MeanSlotDurationMins"],2):g} min') 
+    col2.metric("Mean interruption", f'{round(metrics["MeanInterruptionDurationMins"],2):g} min')
+    col3.metric("Times performed", f'{round(metrics["TimesPerformed"],2):g}')
+    col4, col5, col6 = st.columns(3)
+    col5.metric("Total duration", f'{round(metrics["TotalDurationHours"],2):g} hours')
+    col4.metric("Interruptions per work hour", f'{round(metrics["InterruptionsPerWorkHour"],2):g}')
+    col6.metric("Mean gap days", f'{round(metrics["MeanGapDays"],2):g}')
+
 
 
     # timeline = create_timeline(palette, cp, format=timeline_time_format, tooltip_format="%d %b %H:%M")
@@ -406,19 +227,12 @@ def case_details(raw, palette, case, time_format):
     #     custom_css = custom_css,
     #     key = f'calendar_case_{case}')      
 
-    with st.expander("See details of all activities:"):
-        st.dataframe(
-                        cp.drop("Case", axis=1),            
-                        hide_index=True,
-                        use_container_width=True,
-                        column_config={
-                            "Begin": st.column_config.DatetimeColumn("Begin", format="DD/MM/YY HH:mm"),
-                            "End": st.column_config.DatetimeColumn("End", format="DD/MM/YY HH:mm")
-                        })
 
     st.markdown("##### Details")
 
     by_dates, by_activities = st.tabs(["By dates", "By activities"])
+    activity_metrics = awt.compute_case_metrics(raw[raw["Case"]==case], daily[daily["Case"]==case], by_activity=True)
+
     with by_dates:
         prev_day = None
         # for i, h in hourly[hourly["Case"]==case].iterrows():
@@ -436,24 +250,44 @@ def case_details(raw, palette, case, time_format):
         for name, group in raw[raw["Case"]==case].groupby(raw["Begin"].dt.date):
             with st.expander(f"**{name.strftime('%d %b')}:**", expanded=True):
                 time_filter = (raw["Begin"].dt.date == name) & (raw["Case"] == case)
-                cp = raw[time_filter][["Begin", "End", "WP flow activity", "Case", "Duration"]].copy()
+                df_time = raw[time_filter][["Begin", "End", "WP flow activity", "Case", "Duration"]].copy()
 
-                timeline = create_timeline(palette, cp)
+                timeline = create_timeline(palette, df_time)
                 st.altair_chart(timeline, use_container_width=True)
     with by_activities:
         for name, group in raw[raw["Case"]==case].groupby("WP flow activity", sort=False):
             with st.expander(f"**{name}:**", expanded=True):
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Mean duration", f'{round( activity_metrics.loc[name,"MeanSlotDurationMins"],2):g} min' )
+                col2.metric("Mean interruption", f'{round(activity_metrics.loc[name,"MeanInterruptionDurationMins"],2):g} min')
+                col3.metric("Times performed", f'{round(activity_metrics.loc[name,"TimesPerformed"],2):g}')
+                col4, col5, col6 = st.columns(3)
+                col5.metric("Total duration", f'{round(activity_metrics.loc[name,"TotalDurationHours"],2):g} hours')
+                col4.metric("Interruptions per work hour", f'{round(activity_metrics.loc[name,"InterruptionsPerWorkHour"],2):g}')
+                col6.metric("Mean gap days", f'{round(activity_metrics.loc[name,"MeanGapDays"],2):g}')
                 for j, h in group.groupby(group["Begin"].dt.date):
                     st.markdown(f'**{j.strftime("%d %b")}**')                    
                     #st.markdown(f'**{h["Begin"].strftime("%d %b")}:** From {h["Begin"].strftime("%H:%M")} to {h["End"].strftime("%H:%M")}')
                     #time_filter = ((raw["Begin"] >= h["Begin"]) & (raw["Begin"] <= h["End"])) | ((raw["End"] >= h["Begin"]) & (raw["End"] <= h["End"]))
                     time_filter = (raw["Begin"].dt.date == j) & (raw["Case"] == case)
-                    cp = raw[time_filter][["Begin", "End", "WP flow activity", "Case", "Duration"]].copy()
-                    # cp.loc[cp["Begin"] < h["Begin"], "Begin"] = h["Begin"]
-                    # cp.loc[cp["End"] > h["End"], "End"] = h["End"]
+                    df_time = raw[time_filter][["Begin", "End", "WP flow activity", "Case", "Duration"]].copy()
+                    # df_time.loc[df_time["Begin"] < h["Begin"], "Begin"] = h["Begin"]
+                    # df_time.loc[df_time["End"] > h["End"], "End"] = h["End"]
 
-                    timeline = create_timeline(palette, cp)
+                    timeline = create_timeline(palette, df_time)
                     st.altair_chart(timeline, use_container_width=True)
+
+
+    with st.expander("See details of all activities:"):
+        st.dataframe(
+                        cp.drop("Case", axis=1),            
+                        hide_index=True,
+                        use_container_width=True,
+                        column_config={
+                            "Begin": st.column_config.DatetimeColumn("Begin", format="DD/MM/YY HH:mm"),
+                            "End": st.column_config.DatetimeColumn("End", format="DD/MM/YY HH:mm")
+                        })
+
 
 
 
