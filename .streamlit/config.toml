@@ -2,3 +2,11 @@
 maxUploadSize = 100
 enableXsrfProtection = false
 enableCORS = false
+
+[theme]
+base="light"
+primaryColor="#e3b800"  # Tomato color for primary UI elements
+backgroundColor="#ffffff"  # White background for the main app
+secondaryBackgroundColor="#FFFAE5"  # Light grey color for the sidebar background
+textColor="#000000"  # Black text color
+font="sans serif"

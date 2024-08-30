@@ -67,8 +67,8 @@ def compute_daily_log(dataframe):
     pdaily = dataframe.groupby(["WP flow activity", "Case", dataframe["Begin"].dt.date]).agg(Duration=('Duration', "sum"), Times=('Duration', "count")).reset_index().sort_values(["WP flow activity", "Case", "Begin"])
     pdaily["Duration"] = pdaily["Duration"] / pd.Timedelta('1h')
     pdaily["Begin"] = pd.to_datetime(pdaily["Begin"])
-    pdaily["Gap"] = pdaily.groupby(['WP flow activity', 'Case'])["Begin"].transform(lambda x: (x - x.shift())/pd.Timedelta('1d'))
-    pdaily["CaseGap"] = pdaily.groupby('Case')["Begin"].transform(lambda x: (x - x.shift())/pd.Timedelta('1d'))
+    pdaily["Gap"] = pdaily.groupby(['WP flow activity', 'Case'])["Begin"].transform(lambda x: (x - x.shift())/pd.Timedelta('1d')).fillna(0)
+    pdaily["CaseGap"] = pdaily.groupby('Case')["Begin"].transform(lambda x: (x - x.shift())/pd.Timedelta('1d')).fillna(0)
     # pdaily["CaseDuration"] = pdaily.groupby(['Case', 'Begin'])["Duration"].transform("sum")
     # pdaily["CaseTimes"] = pdaily.groupby(['Case', 'Begin'])["Times"].transform("sum")
 
@@ -258,6 +258,7 @@ def compute_case_metrics(activity_log, daily_log, by_activity=False, freq = None
         groupby_spec = groupby_spec + [pd.Grouper(key="Begin", freq=freq)]
 
     daily_log["NumInterr"] = daily_log["Times"] - 1
+
     if len(groupby_spec) > 0:
         proj = activity_log.groupby(groupby_spec)
         pdaily = daily_log.groupby(groupby_spec)        
@@ -267,7 +268,9 @@ def compute_case_metrics(activity_log, daily_log, by_activity=False, freq = None
 
     g = proj.agg(MeanSlotDurationMins=("Duration_minutes", "mean"), MeanInterruptionDurationMins=("interruption_time", "mean"))
 
-    d = pdaily.agg(TimesPerformed=("Times", "sum"), NumInterr=("NumInterr", "sum"), TotalDurationHours=("Duration", "sum"), MeanGapDays=("Gap", "mean"))
+
+    d = pdaily.agg(TimesPerformed=("Times", "sum"), NumInterr=("NumInterr", "sum"), TotalDurationHours=("Duration", "sum"), MeanGapDays=("CaseGap", "mean"))
+
     if len(groupby_spec) == 0:
         g = g.fillna(0).sum(axis=1)
         d = d.fillna(0).sum(axis=1)
