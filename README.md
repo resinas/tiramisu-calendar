@@ -6,6 +6,9 @@ Tiramisù calendar follows the [Tiramisù conceptual framework](https://doi.org/
 
 You can try Tiramisù calendar at [https://tiramisu-calendar.streamlit.app](https://tiramisu-calendar.streamlit.app).
 
+<img width="800" alt="tiramisu-banana" src="https://github.com/user-attachments/assets/3aac9ed4-8734-4400-a3f6-5b76607da99f">
+
+
 ## Input data
 
 To analyze personal work processes, the tool must be provided with collected personal information in the form of an event log that can be analyzed using process mining techniques. There are several techniques that can be used to collect personal information such as timesheet techniques or screen recordings, each with their own advantages and disadvantages. Tiramisù calendar supports two types of data:
